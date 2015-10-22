@@ -99,7 +99,7 @@ R_AARCH64_ADD_ABS_LO12_NC	+
 R_AARCH64_ADR_GOT_PAGE		+
 R_AARCH64_ADR_PREL_PG_HI21	+
 R_AARCH64_CALL26		+
-R_AARCH64_CONDBR19		- (conditional branch)
+R_AARCH64_CONDBR19		+ (not tested)
 R_AARCH64_JUMP26		+
 R_AARCH64_LD64_GOT_LO12_NC	+
 R_AARCH64_LDST128_ABS_LO12_NC	+
@@ -107,8 +107,8 @@ R_AARCH64_LDST16_ABS_LO12_NC	+
 R_AARCH64_LDST32_ABS_LO12_NC	+
 R_AARCH64_LDST64_ABS_LO12_NC	+
 R_AARCH64_LDST8_ABS_LO12_NC	+
-R_AARCH64_PREL32		- (not tested)
-R_AARCH64_PREL64		- (not tested)
+R_AARCH64_PREL32		+
+R_AARCH64_PREL64		+
 #endif
 
 #define ELF_REL_ERR     -1
@@ -471,12 +471,12 @@ static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_
 
 	    case R_AARCH64_JUMP26:
 	    case R_AARCH64_CALL26:
-		rval = (sym_addr - offs)/4;
-		if(rval >= 0x8000000 || rval < (int64_t) 0xfffffffff8000000) {
-		    log_err("\n-- branch offset %llx out of range\n", (long long) rval);
+		sym_addr -= offs;
+		if(sym_addr >= 0x8000000 || sym_addr < (int64_t) 0xfffffffff8000000) {
+		    log_err("\n-- branch offset %llx out of range\n", (long long) sym_addr);
 		    return ELF_REL_ERR;	
 		}	
-		*rel_addr = (*rel_addr & 0xfc000000) | (rval & 0x3ffffff);
+		*rel_addr = (*rel_addr & 0xfc000000) | ((sym_addr >> 2) & 0x3ffffff);
 		break;
 
 	    case R_AARCH64_ADR_GOT_PAGE:
@@ -539,6 +539,14 @@ static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_
 		rval = ((sym_addr & 0xfff) << 10);
 		*rel_addr = (*rel_addr & 0xffc003ff) | rval;
 		break;	
+	    case R_AARCH64_CONDBR19:
+		sym_addr -= offs;
+		if(sym_addr >= 0x100000 || sym_addr < (int64_t) 0xfffffffffff00000) {
+		    log_err("\n-- branch offset %llx out of range\n", (long long) sym_addr);
+		    return ELF_REL_ERR;	
+		}	
+		*rel_addr = (*rel_addr & 0xff00001f) | ((sym_addr & 0x1ffffc) << 3);
+		break;
 #endif
 	    default:
 		log_err("\nUnsupported relocation type %d\n", rel_type);
