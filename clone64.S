@@ -45,19 +45,49 @@ clone:
    .parent_or_error:
 	mov	x8, x7
 	brk	0	
-	ret	/* not reached, test only */
+	ret					/* not reached */
 clone_size:
 	.word . - clone
 
 .align  4
 spawn:
+	stp	x7, x8, [sp,-16]!
+	mov	x0, xzr
+	mov	x1, xzr
+	mov	x2, xzr
+	mov	x3, xzr
+	mov	x4, xzr
+	mov	x5, xzr
+	mov	x6, xzr
+	mov	x7, xzr
+	mov	x8, __NR_clone
+	svc	0
+	cbnz	x0, .parent
+	ldr	x1, .argv
+	ldr	x2, .arge
+	ldr	x0, [x1]
+	mov	x8, __NR_execve
+	svc	0
+	add	sp, sp, 16
+	mov	x0, xzr
+	mov	x8, __NR_exit
+	svc	0
+.parent:
+	ldp	x7, x8, [sp], 16
+	brk	0
 	ret
+
+.align 4
+.argv:
+	.quad	0
+.arge:
+	.quad	0
 spawn_argv:
-	.word	0
+	.quad	(.argv - spawn)
 spawn_arge:
-	.word	0
+	.quad	(.arge - spawn)
 spawn_size:
-	.word . - spawn
+	.word	(. - spawn)
 
 .global clone, clone_size
 .global spawn, spawn_size, spawn_argv, spawn_arge

@@ -13,6 +13,9 @@
 #define EM_AARCH64	183
 #endif
 
+#define ADD_FORKEXEC	1
+//#undef ADD_FORKEXEC	
+
 /* defined in cloneXX.S */
 extern void *clone, *spawn;
 extern int clone_size, spawn_size;
@@ -20,7 +23,7 @@ extern off_t spawn_argv, spawn_arge;
 
 /* main entry points */
 static int injector(int argc, char **argv);
-#if 0
+#if ADD_FORKEXEC
 static int forkexec(int argc, char **argv);
 #endif
 
@@ -32,7 +35,7 @@ int main(int argc, char **argv) {
     else prog++;
     if(strncmp(prog, "injector", strlen("injector")) == 0) 
 	return injector(argc, argv);	
-#if 0
+#if ADD_FORKEXEC
     else if(strncmp(prog, "spawn", strlen("spawn")) == 0) 
 	return forkexec(argc, argv);
 #endif
@@ -802,9 +805,20 @@ static int injector(int argc, char **argv)
 }
 
 
-#if 0
+#if ADD_FORKEXEC
 /* Default environment strings (separated by '\0') that should be passed to execve in spawn(). */
 #define DFL_SPAWN_ENVIRON	"ANDROID_ROOT=/system\0ANDROID_DATA=/data"
+
+#if 1
+void pstack() {
+    long sp;
+	asm("mov  %0,sp\n\t" : "=r"(sp));
+    log_info("sp=%llx\n", (long long) sp);
+}
+#else
+#define pstack() printf("okay\n")
+#endif
+
 
 /*
 NB: zero flag is specified in clone() not to create zombies.
@@ -891,9 +905,9 @@ static int forkexec(int argc, char **argv) {
 			log_err("out of memory\n");
 			goto done;
 		    }
-		    c =	estr_len ? estrings + estr_len : estrings;
-		    strcpy(c, optarg);
-		    estr_len += len;			    	
+		    c = estrings + estr_len;	
+		    memcpy(c, optarg, len);
+		    estr_len += len;
 		    break;
 
 		case 'q':
@@ -923,9 +937,8 @@ static int forkexec(int argc, char **argv) {
 	}
 
 	if(!target_pid) usage();
-	log_info("args parsed\n");
-
 	if(quiet) verbose = 0;
+	log_info("Prepare code for injection ...\n");
 
 	if(!remove_default_env) {
 	    estrings = realloc(estrings, estr_len + environ_len);
@@ -933,7 +946,7 @@ static int forkexec(int argc, char **argv) {
 		log_err("out of memory\n");
 		goto done;
 	    }
-	    c = estr_len ? estrings + estr_len : estrings;
+	    c = estrings + estr_len;
 	    memcpy(c, environ, environ_len);
 	    estr_len += environ_len;	
 	}
@@ -952,11 +965,16 @@ static int forkexec(int argc, char **argv) {
 	argv += optind;
 	argc -= optind;
 
+	aptrs = (off_t *) malloc(sizeof(off_t) * (argc+1));
+	if(!aptrs) {
+	    log_err("no memory for argv\n");
+	    goto done;	
+	}
+
 	for(k = 0; k < argc; k++) {	/* copy argv strings to layout */
 	    len = (strlen(argv[k]) + 1);
 	    mem = realloc(mem, tot_len + len); 
-	    aptrs = (off_t *) realloc(aptrs, sizeof(off_t) * (aptrs_num + 1));
-	    if(!mem || !aptrs) {
+	    if(!mem) {
 		log_err("no memory for argv strings\n");
 		goto done;
 	    }	
@@ -965,14 +983,12 @@ static int forkexec(int argc, char **argv) {
 	    aptrs[aptrs_num++] = tot_len;	/* relative to start address */	
 	    tot_len += len;
 	}
-	aptrs = (off_t *) realloc(aptrs, sizeof(off_t) * (aptrs_num + 1));  /* final null ptr */
-	if(!aptrs) {
-	    log_err("no mem for argv\n");	
-	    goto done;	
-	}
+
 	aptrs[aptrs_num++] = 0;
 
+	/****************/	
 	mem = realloc(mem, tot_len + estr_len);
+
 	if(!mem) {
 	    log_err("no memory for envp strings\n");
 	    goto done;
@@ -1026,11 +1042,16 @@ static int forkexec(int argc, char **argv) {
 	    *((off_t *) mem) = aptrs[k] + (off_t) lay->base;	
 	    mem += sizeof(off_t);
 	}
-	mem += sizeof(off_t);		/* skip null ptr */
+	*((off_t *) mem) = 0;
+	mem += sizeof(off_t); 	/* skip null ptr */
 	for(k = 0; k < eptrs_num - 1; k++) {
 	    *((off_t *) mem) = eptrs[k] + (off_t) lay->base;	
 	    mem += sizeof(off_t);
 	}
+	*((off_t *) mem) = 0;
+
+	mem = lay->mem;
+
 	if(dump_image) {
 	    lay->bss = tot_len;
 	    dump(lay);
@@ -1043,7 +1064,6 @@ static int forkexec(int argc, char **argv) {
 	}
 
 	/* lay->startup_offs = 0; <-- spawn code is at the start of our image */
-
 	ret = run(target_pid, lay, 0, 0);
 	if(ret == -1) {
 	    log_err("error launching\n");
@@ -1057,7 +1077,7 @@ static int forkexec(int argc, char **argv) {
 	    log_err("failed to free process memory!\n");
 	    goto done;
 	}		
-	log_info("process memory cleaned\n");
+	log_info("Process memory cleaned\n");
 
     done:
 	if(mem) free(mem);
