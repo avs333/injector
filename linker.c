@@ -1,12 +1,6 @@
 #include        "common.h"
 
 #define R_ARM_NONE			0
-/* platforms/android-21/arch-arm64/usr/include/machine/elf_machdep.h: 
-   why redefine R_AARCH64_NONE=0 to 256 which is clearly marked as WITHDRAWN in specs?! */
-#ifdef R_AARCH64_NONE
-#undef R_AARCH64_NONE
-#endif
-#define R_AARCH64_NONE			0
 
 #ifdef __arm__
 #define R_ARM_ABS32			2
@@ -22,12 +16,17 @@
 #define R_ARM_GOT_PREL			96
 #define R_ARM_THM_JUMP11		102
 #define R_ARM_THM_JUMP8			103
-/* On Linux board, no such relocs in Android */
 #define R_ARM_MOVW_ABS_NC		43
 #define R_ARM_MOVT_ABS			44
 #define R_ARM_THM_MOVW_ABS_NC		47
 #define R_ARM_THM_MOVT_ABS		48
 #else	/* __aarch64__ */
+/* platforms/android-21/arch-arm64/usr/include/machine/elf_machdep.h: 
+   why redefine R_AARCH64_NONE=0 to 256 which is clearly marked as WITHDRAWN in specs?! */
+#ifdef R_AARCH64_NONE
+#undef R_AARCH64_NONE
+#endif
+#define R_AARCH64_NONE			0
 #define R_AARCH64_ABS64			257
 #define R_AARCH64_ABS32			258
 #define R_AARCH64_ADR_PREL_PG_HI21	275
@@ -92,7 +91,7 @@ R_ARM_THM_JUMP24		+
 R_ARM_THM_JUMP8			- (not tested)
 R_ARM_V4BX			- (dont care, armv4 compatibility relocation for BX branches)
 
-find google/out/target/product/flounder/obj -name \*\.o | xargs aarch64-linux-android-objdump -r | grep R_AARCH64 | awk '{ print $3 }' | sort | uniq
+find google/out/target/product/flounder/obj -name \*\.o | xargs aarch64-linux-android-objdump -r | grep R_AARCH64 | cut -d" " -f 2 | sort | uniq
 R_AARCH64_ABS32			+
 R_AARCH64_ABS64			+
 R_AARCH64_ADD_ABS_LO12_NC	+

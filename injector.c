@@ -5,6 +5,7 @@
 #include <asm/unistd.h>
 #include <asm/ptrace.h>
 #include <linux/sched.h>
+#include <signal.h>
 
 #ifndef EM_ARM
 #define EM_ARM		40
@@ -75,22 +76,25 @@ static void dump(layout *dlay)
 	close(fd);
 }
 
-#if 0
-#include <signal.h>
+#if 1
 void exit_on_fault(int sig, siginfo_t *info, void *context) {
+#ifdef __arm__
     struct sigcontext *ctx = &(((ucontext_t*)context)->uc_mcontext);
-	printf("Exiting on signal %d\n", sig);
-	if(ctx) printf("PC %08lx LR %08lx\n", ctx->arm_pc, ctx->arm_lr);
+	if(ctx) printf("Fault at PC %08lx (LR %08lx)\n", ctx->arm_pc, ctx->arm_lr);
 	else printf("no ctx\n");
+#endif
+	log_err("Exiting on signal %d\n", sig);
     _exit(1);
 }
-void install_sighandlers(layout *lay)
+static struct sigaction sact = { .sa_sigaction = exit_on_fault };
+void catch_abnormals()
 {
-    struct sigaction sact = { .sa_sigaction = exit_on_fault };
-    dlay = lay;
-    sigaction(SIGSEGV, &sact, 0);
+    sigaction(SIGTRAP, &sact, 0);		
     sigaction(SIGILL, &sact, 0);		
     sigaction(SIGBUS, &sact, 0);		
+    sigaction(SIGSEGV, &sact, 0);
+    sigaction(SIGFPE, &sact, 0);
+    sigaction(SIGSTKFLT, &sact, 0);
 }
 #endif
 
@@ -466,8 +470,8 @@ static pid_t run(pid_t pid, layout *lay, void *start_arg, size_t stack_size)
     return ret;
 }
 
-#define DFL_MAX_PLT_SIZE		0x1800		/* max sizes allocated for PLT and */	
-#define DFL_MAX_GOT_SIZE		0x400		/* GOT at 1st pass  */
+#define DFL_MAX_PLT_SIZE		0x2000		/* max sizes allocated for PLT and */	
+#define DFL_MAX_GOT_SIZE		0x1000		/* GOT at 1st pass  */
 #define DFL_STACK_SIZE			0x80000		/* 512k for thread stack */
 #define PID_WAIT_MS			20		/* check interval for wait_exit */
 
@@ -507,6 +511,7 @@ static int injector(int argc, char **argv)
 	    "-s <size> -- stack size of execution thread (default is %d)\n"
 	/*  "-t/-g <size> -- maximum size of PLT/GOT sections for 1st pass (defaults: 0x%x/0x%x)\n" */
 	    "-p <pid> OR -n <proc_name> -- target pid or process name (default is current process)\n"
+	    "-w -- wait until the thread has exited (take care to undo process changes if any!)\n"
 	    "-v -- verbose output: includes debugging information (may be repeated)\n"
 	    "-q -- quiet output: only errors and cleanup string if any\n\n",
 		progname, progname, DFL_STACK_SIZE /*, DFL_MAX_PLT_SIZE, DFL_MAX_GOT_SIZE */);
@@ -516,7 +521,7 @@ static int injector(int argc, char **argv)
 	progname = argv[0];
 
 	if(argc < 2) usage();
-
+	catch_abnormals();
 	if(strcmp(argv[1], "cleanup") == 0) {
 	    if(argc != 5) usage();
 	    target_pid = atoi(argv[2]);
@@ -571,6 +576,9 @@ static int injector(int argc, char **argv)
 		case 'v':
 		    verbose++;
 		    break;
+		case 'w':
+		    wait_exit = 1;
+		    break;
 		/* Debugging options, not displayed in usage() */
 		case 't':
 		    max_plt_size = strtoul(optarg, 0, 0);
@@ -583,9 +591,6 @@ static int injector(int argc, char **argv)
 		    break;
 		case 'd':
 		    dump_image = 1;
-		    break;
-		case 'w':
-		    wait_exit = 1;
 		    break;
 		default:
 		    usage();
@@ -970,6 +975,7 @@ static int forkexec(int argc, char **argv) {
 	    log_err("no memory for argv\n");
 	    goto done;	
 	}
+	catch_abnormals();
 
 	for(k = 0; k < argc; k++) {	/* copy argv strings to layout */
 	    len = (strlen(argv[k]) + 1);
