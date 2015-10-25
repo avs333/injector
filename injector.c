@@ -6,6 +6,7 @@
 #include <asm/ptrace.h>
 #include <linux/sched.h>
 #include <signal.h>
+#include <limits.h>
 
 #ifndef EM_ARM
 #define EM_ARM		40
@@ -367,12 +368,13 @@ static int free_process_mem(pid_t pid, void *mem, size_t len)
     return (int) (long) map_unmap_process_mem(pid, mem, len);
 }
 
-static int copy_to_process(pid_t pid, void *base, void *mem, size_t len) 
+/* len should be at most PAGESIZE */
+static int _copy_to_process(pid_t pid, void *base, void *mem, size_t len) 
 {
     long pt;
-    int k, ret = 0;
+    int k;
     long *mm = (long *) mem;
-
+	if(len == 0) return 0;
 	pt = ptrace(PTRACE_ATTACH, pid, 0, 0);
 	if(pt != 0) {
 	    log_err("cannot attach to pid %d\n", pid);
@@ -385,13 +387,50 @@ static int copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 	for(k = 0; k < len/(sizeof(*mm)); k++, base += sizeof(*mm)) {
 	    pt = ptrace(PTRACE_POKETEXT, pid, base, (void *) mm[k]);
 	    if(pt != 0) {
-		ret = -1;	
-		break;
+		log_err("poke failed in %s\n", __func__);
+		ptrace(PTRACE_DETACH, pid, 0, 0);
+		return -1;
 	    }
 	}
 	ptrace(PTRACE_DETACH, pid, 0, 0);
-    return ret;	
+	log_debug("%d bytes copied\n",  (int) len);
+    return 0;	
 }
+
+static int copy_to_process(pid_t pid, void *base, void *mem, size_t len)
+{
+    int k, fd = -1;
+    char file[128];
+
+	if(len < PAGESIZE) return _copy_to_process(pid, base, mem, len);
+
+	sprintf(file, "/proc/%d/mem", pid);
+	fd = open(file, O_RDWR);
+	if(fd <= 0) {
+	    log_err("failed to open %s\n", file);
+	    goto err;		
+	}
+	if(lseek(fd, (off_t) base, SEEK_SET) != (off_t) base) {
+	    log_err("seek to %p failed for %s\n", base, file);
+	    goto err;		
+	}	
+	for(k = 0; k < len/PAGESIZE; k++) {
+	    if(write(fd, mem, PAGESIZE) != PAGESIZE) {
+		log_err("write failed at %p for %s\n", base, file);
+		goto err;
+	    }	
+	    mem  += PAGESIZE;
+	    base += PAGESIZE;
+	}
+	log_debug("%d bytes copied\n",  (int) (len/PAGESIZE) * PAGESIZE);
+	close(fd);
+	return _copy_to_process(pid, base, mem, len % PAGESIZE);
+    err:
+	log_err("copy to %d failed\n", pid);
+	if(fd > 0) close(fd);
+	return -1;
+}
+
 
 static pid_t run(pid_t pid, layout *lay, void *start_arg, size_t stack_size)
 {
@@ -721,7 +760,7 @@ static int injector(int argc, char **argv)
 	lay->bss = tot_len;
 	tot_len += lay->bss_size;
 	if(tot_len & 15) tot_len += (16 - (tot_len & 15));
-		
+	
 	lay->mem = mmap(0, tot_len, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 	if(lay->mem == MAP_FAILED) {
 	    log_err("mmap failed for second pass\n");
@@ -755,7 +794,7 @@ static int injector(int argc, char **argv)
 	log_info("mem=%p plt=%lx got=%lx bss=%lx bss_size=%lx\n",
 		lay->mem, (long) lay->plt, (long) lay->got,
 		(long) lay->bss, (long) lay->bss_size);
-
+	
 	if(dump_image) dump(lay);
 
 	if(target_pid) {
@@ -814,14 +853,11 @@ static int injector(int argc, char **argv)
 /* Default environment strings (separated by '\0') that should be passed to execve in spawn(). */
 #define DFL_SPAWN_ENVIRON	"ANDROID_ROOT=/system\0ANDROID_DATA=/data"
 
-#if 1
-void pstack() {
-    long sp;
-	asm("mov  %0,sp\n\t" : "=r"(sp));
+#if 0
+static inline void pstack() {
+    long sp; asm("mov  %0,sp\n\t" : "=r"(sp));
     log_info("sp=%llx\n", (long long) sp);
 }
-#else
-#define pstack() printf("okay\n")
 #endif
 
 
