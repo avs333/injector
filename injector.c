@@ -368,6 +368,7 @@ static int free_process_mem(pid_t pid, void *mem, size_t len)
     return (int) (long) map_unmap_process_mem(pid, mem, len);
 }
 
+#if 0
 /* len should be at most PAGESIZE */
 static int _copy_to_process(pid_t pid, void *base, void *mem, size_t len) 
 {
@@ -396,14 +397,17 @@ static int _copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 	log_debug("%d bytes copied\n",  (int) len);
     return 0;	
 }
+#endif
 
 static int copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 {
     int k, fd = -1;
     char file[128];
 
-	if(len < PAGESIZE) return _copy_to_process(pid, base, mem, len);
-
+	if(len & (sizeof(long) - 1)) {
+	    log_err("internal error: image size not multiple of %d\n", (int) sizeof(long));
+	    return -1;
+	}
 	sprintf(file, "/proc/%d/mem", pid);
 	fd = open(file, O_RDWR);
 	if(fd <= 0) {
@@ -423,10 +427,19 @@ static int copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 	    base += PAGESIZE;
 	}
 	log_debug("%d bytes copied\n",  (int) (len/PAGESIZE) * PAGESIZE);
+	for(k = 0; k < len % PAGESIZE; k += sizeof(long)) {
+	    if(write(fd, mem, sizeof(long)) != sizeof(long)) {
+		log_err("write failed at %p for %s\n", base, file);
+		goto err;
+	    }	
+	    mem  += sizeof(long);
+	    base += sizeof(long);
+	}
+	log_debug("%d bytes copied\n",  k);
+	
 	close(fd);
-	return _copy_to_process(pid, base, mem, len % PAGESIZE);
+	return 0;
     err:
-	log_err("copy to %d failed\n", pid);
 	if(fd > 0) close(fd);
 	return -1;
 }
@@ -805,7 +818,7 @@ static int injector(int argc, char **argv)
 		log_err("failed to copy object code into process memory\n");
 		goto done;
 	    }
-	    log_info("Image copied to pid %d\n", target_pid);
+	    log_info("Image copied\n");
 
 	    k = run(target_pid, lay, start_arg, stack_size);
 
