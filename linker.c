@@ -169,8 +169,6 @@ static off_t handle_external_symbol(uint32_t rel_type, char *name, layout *lay, 
 	    return 0;
 	}
 
-	memset(&plt_code, 0, sizeof(plt_code));
-
 	switch(rel_type) {
 #ifdef __arm__
 	    /* 32-bit call/jump relocations */	
@@ -239,7 +237,7 @@ static off_t handle_external_symbol(uint32_t rel_type, char *name, layout *lay, 
     return (long) offs;
 }
 
-static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_info *loaded_libs)
+static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_info *loaded_libs, comm_sym *commons)
 {
     uint32_t sym = ELF_R_SYM(rel->r_info);	
     uint32_t rel_type = ELF_R_TYPE(rel->r_info);
@@ -295,6 +293,18 @@ static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_
 	    /* Absolute symbol */
 	    sym_addr = symbol->st_value;
 	    log_debug("-- absolute, addr=%lx", sym_addr);
+	} else if(symbol->st_shndx == SHN_COMMON) {
+	    comm_sym *c = commons;	
+	    while(c) {
+		if(c->symtab_index == sym) break;
+		c = c->next;
+	    }	
+	    if(!c) {
+		log_err("-- common symbol '%s' not found\n", name);
+		return ELF_REL_ERR;
+	    }		
+	    sym_addr = lay->comm + c->comm_offset;
+	    log_debug("[common, addr=%lx]", sym_addr); 
 	} else {
 	    /* Symbol relative to some section */
 	    Elf_Shdr *section = section_hdr((Elf_Ehdr *)lay->mem, symbol->st_shndx);
@@ -373,8 +383,8 @@ static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_
 			break;
 		}
 		if(k < lay->got_size) {
-		    log_debug("(reused in GOT)");	
-		    return 0;	
+		    log_debug(" (reused in GOT)");	
+		    break;	
 		}
 		/* not found, add new GOT entry */
 		if(lay->got_size + 4 > lay->max_got) {	
@@ -555,15 +565,77 @@ static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_
     return 0;
 }
 
+int setup_image(layout *lay, char *start_name, comm_sym **commons)
+{
+    int i, k, bss = 0;
+    void *c, *cc;
+    char *names;
+    Elf_Ehdr *elf = (Elf_Ehdr *) lay->mem;
+    Elf_Shdr *sh, *strtab;
+    Elf_Sym *sym;
+    comm_sym *s, *last = 0;
+    size_t co, cur_offset = 0;
 
-int setup_image(layout *lay, lib_info *loaded_libs, char *start_name)
+	for(c = lay->mem + elf->e_shoff, k = 0; k < elf->e_shnum; k++, c += elf->e_shentsize) {
+	    sh = (Elf_Shdr *) c;	
+	    switch(sh->sh_type) {
+	    	case SHT_NOBITS: 
+		    if(bss) {
+			log_err("Multiple NOBITS (a.k.a. BSS) sections not supported.\n"
+				"Please merge \"%s\" and \"%s\" in object file.\n",
+				section_name(elf, bss), section_name(elf, k));
+			return -1;
+		    }	
+		    lay->bss_size = sh->sh_size;
+		    bss = k;
+		    break;
+		case SHT_SYMTAB:
+		    strtab = section_hdr(elf, sh->sh_link);
+		    names = (char *) elf + strtab->sh_offset;		
+		    for(cc = lay->mem + sh->sh_offset, i = 0; i < sh->sh_size/sh->sh_entsize; i++, cc += sh->sh_entsize) {
+			sym = (Elf_Sym *) cc;
+			if(lay->entry_offs == -1 && strcmp(names + sym->st_name, start_name) == 0) {
+			    lay->entry_offs = section_hdr(elf, sym->st_shndx)->sh_offset + sym->st_value;
+			    log_debug("found '%s' at 0x%lx (0x%lx) in section %d\n", 
+					start_name, (long)sym->st_value, lay->entry_offs, sym->st_shndx);		
+			} else if(sym->st_shndx == SHN_COMMON) {
+			    s = (comm_sym *) calloc(1, sizeof(comm_sym));
+			    if(!s) {
+				    log_err("Out of memory\n");
+				    return -1;
+			    }
+			    if(!last) {
+				last = s;
+				*commons = last;
+			    } else {
+				last->next = s;
+				last = s;
+			    }
+			    last->symtab_index = i;
+			    co = cur_offset % sym->st_value;
+			    if(co) cur_offset = (cur_offset/sym->st_value + 1) * sym->st_value;
+			    last->comm_offset = cur_offset;
+			    log_debug("COMM symbol '%s' at offset %ld [size=%ld]\n", names + sym->st_name, 
+					(long) cur_offset, (long) sym->st_size);
+			    cur_offset += sym->st_size;	 
+			}
+		    }
+		    break;
+		default:
+		    break;	
+	    }
+	}
+	lay->comm_size = cur_offset;
+    return 0;
+}
+
+int relocate_image(layout *lay, lib_info *loaded_libs, comm_sym *commons)
 {
 
-    int i, k, bss = 0, ret = 0;
+    int i, k;
     Elf_Ehdr *elf = (Elf_Ehdr *) lay->mem;
-    void *c, *cc, *names;
-    Elf_Shdr *sh, *strtab;
-
+    void *c, *cc;
+    Elf_Shdr *sh;
 
 	for(c = lay->mem + elf->e_shoff, k = 0; k < elf->e_shnum; k++, c += elf->e_shentsize) {
 	    sh = (Elf_Shdr *) c;	
@@ -578,40 +650,14 @@ int setup_image(layout *lay, lib_info *loaded_libs, char *start_name)
 		case SHT_RELA:
 		    for(cc = lay->mem + sh->sh_offset, i = 0; i < sh->sh_size/sh->sh_entsize; i++, cc += sh->sh_entsize) {	
 			Elf_Rela *rel = (Elf_Rela *) cc;
-			if(relocate(sh->sh_type, sh, rel, lay, loaded_libs) != 0) {
-			    ret = -1;
-			    goto done;
-			}	
+			if(relocate(sh->sh_type, sh, rel, lay, loaded_libs, commons) != 0) return -1;
 		    }
 		    break;
-		case SHT_SYMTAB:
-		    strtab = section_hdr(elf, sh->sh_link);
-		    names = (char *) elf + strtab->sh_offset;		
-		    for(cc = lay->mem + sh->sh_offset, i = 0; i < sh->sh_size/sh->sh_entsize; i++, cc += sh->sh_entsize) {
-			Elf_Sym *sym = (Elf_Sym *) cc;
-			if(strcmp(names + sym->st_name, start_name) == 0) {
-			    lay->entry_offs = section_hdr(elf, sym->st_shndx)->sh_offset + sym->st_value;
-			    log_debug("\t=> found '%s' at 0x%lx (0x%lx) in section %d\n", 
-					start_name, (long)sym->st_value, lay->entry_offs, sym->st_shndx);		
-			}
-		    }
+		default:
 		    break;
-	    	case SHT_NOBITS: 
-		    if(bss) {
-			log_err("Multiple NOBITS (a.k.a. BSS) sections not supported.\n"
-				"Please merge \"%s\" and \"%s\" in object file.\n",
-				section_name(elf, bss), section_name(elf, k));
-			ret = -1;
-			goto done;	
-		    }	
-		    lay->bss_size = sh->sh_size;
-		    bss = k;
-		    break;
-	    }	
+	    }
 	}
-    done:
-	
-    return ret;
+    return 0;
 }
 
 int add_lib(pid_t target_pid, lib_info **loaded_libs, char *name)

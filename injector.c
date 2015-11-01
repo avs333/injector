@@ -77,7 +77,7 @@ static void dump(layout *dlay)
 	close(fd);
 }
 
-#if 1
+#if 0
 void exit_on_fault(int sig, siginfo_t *info, void *context) {
 #ifdef __arm__
     struct sigcontext *ctx = &(((ucontext_t*)context)->uc_mcontext);
@@ -108,6 +108,15 @@ static void free_loaded_libs(lib_info *loaded_libs)
 	    if(lib->dlhandle) dlclose(lib->dlhandle);
 	    if(lib->img != MAP_FAILED) munmap(lib->img,lib->img_size);
 	    free(lib);	
+	}
+}
+
+static void free_commons(comm_sym *commons)
+{
+    comm_sym *s, *next;
+	for(s = commons; s; s = next) {
+	    next = s->next;
+	    free(s);
 	}
 }
 
@@ -535,6 +544,7 @@ static int injector(int argc, char **argv)
     char *progname, *start_name = "main";
     Elf_Ehdr ehdr;
     lib_info *loaded_libs = 0;		/* linked array of libs for symbol lookups */
+    comm_sym *commons = 0;		/* linked array of common symbols */
     void *img = MAP_FAILED;
     pid_t target_pid = 0;
     int firstpassonly = 0;
@@ -573,7 +583,9 @@ static int injector(int argc, char **argv)
 	progname = argv[0];
 
 	if(argc < 2) usage();
+#if 0
 	catch_abnormals();
+#endif
 	if(strcmp(argv[1], "cleanup") == 0) {
 	    if(argc != 5) usage();
 	    target_pid = atoi(argv[2]);
@@ -696,10 +708,30 @@ static int injector(int argc, char **argv)
 		log_err("warning: failed to add library %s\n", argv[optind]);
 		/* goto done; */
 	    }	
-	
-	/* First pass */
+
 
 	memset(lay, 0, sizeof(layout));
+
+	lay->entry_offs = -1;
+	lay->mem = img;
+
+	/* Determine lay->entry_offs, lay->bss_size, lay->comm_size
+	 and offsets of common symbols */
+
+	if(setup_image(lay, start_name, &commons) != 0) {
+	    log_err("image setup failed\n");
+	    goto done;		
+	}
+
+	if(lay->entry_offs == -1) {
+	    log_err("entry point \"%s\" not found\n", start_name);	
+	    goto done;
+	}
+
+	log_info("Setup succeeded for %lx: entry=0x%lx, extra memory used: bss=0x%lx, comm=0x%lx\n", 
+		(long) lay->mem, (long) lay->entry_offs, (long) lay->bss_size, (long) lay->comm_size);
+
+	/* First pass */
 
 	lay->startup_offs = (img_len & 15) ? img_len + (16 - (img_len & 15)) : img_len;
 	tot_len = lay->startup_offs + clone_size;
@@ -718,8 +750,13 @@ static int injector(int argc, char **argv)
 	if(tot_len & 15) tot_len += (16 - (tot_len & 15));
 
 	lay->bss = tot_len;
-	lay->bss_size = 0;	/* to be set in 1st pass */
-	lay->entry_offs = -1;
+	tot_len += lay->bss_size;	/* calculated in setup_image */	
+	if(tot_len & 15) tot_len += (16 - (tot_len & 15));
+
+	lay->comm = tot_len;
+	tot_len += lay->comm_size;	/* calculated in setup_image */
+	if(tot_len & 15) tot_len += (16 - (tot_len & 15));
+
 		
 	lay->mem = mmap(0, tot_len, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 	if(lay->mem == MAP_FAILED) {
@@ -730,25 +767,19 @@ static int injector(int argc, char **argv)
 
 	if(firstpassonly && verbose < 2) verbose = 2;
 
-	if(setup_image(lay, loaded_libs, start_name) != 0){
+	if(relocate_image(lay, loaded_libs, commons) != 0){
 	    log_err("First pass failed.\n");
 	    goto done;
 	}
 
 	if(verbose < 2) verbose = !quiet;
 
-	log_info("First pass succeeded, extra memory used: plt=0x%lx/0x%lx, got=0x%lx/0x%lx, bss=0x%lx\n", 
-		(long) lay->plt_size, (long) lay->max_plt, (long) lay->got_size, 
-		(long) lay->max_got, (long) lay->bss_size);
+	log_info("First pass succeeded for %lx, extra memory used: plt=0x%lx/0x%lx, got=0x%lx/0x%lx\n", 
+		(long) lay->mem, (long) lay->plt_size, (long) lay->max_plt, (long) lay->got_size, (long) lay->max_got);
 
 	if(firstpassonly) {
 	    ret = 0;	
 	    goto done;	
-	}
-
-	if(lay->entry_offs == -1) {
-	    log_err("entry point not found\n");	
-	    goto done;
 	}
 
 	/* Prepare to second pass */
@@ -772,6 +803,10 @@ static int injector(int argc, char **argv)
 
 	lay->bss = tot_len;
 	tot_len += lay->bss_size;
+	if(tot_len & 15) tot_len += (16 - (tot_len & 15));
+
+	lay->comm = tot_len;
+	tot_len += lay->comm_size;
 	if(tot_len & 15) tot_len += (16 - (tot_len & 15));
 	
 	lay->mem = mmap(0, tot_len, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
@@ -798,7 +833,7 @@ static int injector(int argc, char **argv)
 	    log_info("Target process memory allocated at %p\n", lay->base); 
 	}
 
-	if(setup_image(lay, loaded_libs, start_name) != 0){
+	if(relocate_image(lay, loaded_libs, commons) != 0){
 	    log_err("failed to setup sections\n");
 	    goto done;
 	}
@@ -857,7 +892,7 @@ static int injector(int argc, char **argv)
 	if(img != MAP_FAILED) munmap(img, img_len);
 	if(lay->mem != MAP_FAILED) munmap(lay->mem, tot_len);
 	free_loaded_libs(loaded_libs);
-
+	free_commons(commons);
     return ret;
 }
 
@@ -1024,8 +1059,9 @@ static int forkexec(int argc, char **argv) {
 	    log_err("no memory for argv\n");
 	    goto done;	
 	}
+#if 0
 	catch_abnormals();
-
+#endif
 	for(k = 0; k < argc; k++) {	/* copy argv strings to layout */
 	    len = (strlen(argv[k]) + 1);
 	    mem = realloc(mem, tot_len + len); 

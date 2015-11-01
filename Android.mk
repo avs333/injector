@@ -4,7 +4,7 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_SRC_FILES := injector.c linker.c
-LOCAL_CFLAGS += -Wall -O3
+LOCAL_CFLAGS += -Wall -g #-O3
 
 ifeq ($(TARGET_ARCH),arm)
 LOCAL_SRC_FILES += clone32.S

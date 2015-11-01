@@ -51,13 +51,14 @@ typedef struct _libinfo {
 } lib_info;
 
 typedef struct _layout {
-    void *base;					/* start loading address in target process addrspace (2nd pass) */
-    void *mem;					/* start loading address in our process addrspace */
-    off_t plt, got, bss;			/* PLT/GOT/BSS offsets from start address */
-    size_t plt_size, got_size, bss_size;	/* their sizes (updated during 1st pass, must be 0 on entry to setup_image()) */
-    size_t max_plt, max_got;			/* size limits (set to max_*_size for 1st pass, and to calculated sizes thereafter) */
-    off_t entry_offs;				/* entry point offset found in object file during 1st pass */	
-    off_t startup_offs;				/* offset of startup code that creates a new thread and calls entry point */
+    void *base;						/* start loading address in target process addrspace (2nd pass) */
+    void *mem;						/* start loading address in our process addrspace */
+    off_t plt, got, bss, comm;				/* PLT/GOT/BSS/COMM offsets from start address */
+    size_t plt_size, got_size;				/* PLT/GOT sizes (updated during 1st pass, must be 0 on entry to relocate_image()) */
+    size_t bss_size, comm_size;				/* BSS/COMM sizes determined during setups  */	
+    size_t max_plt, max_got;				/* size limits (set to max_*_size for 1st pass, and to calculated sizes thereafter) */
+    off_t entry_offs;					/* entry point offset found in object file during setup */	
+    off_t startup_offs;					/* offset of startup code that creates a new thread and calls entry point */
 } layout;
 
 extern int verbose;
@@ -65,7 +66,15 @@ extern int verbose;
 /* Add library ("name" = its full path) to a linked lib_info list for symbol name resolution */
 extern int add_lib(pid_t pid, lib_info **libs, char *name);
 
-/* Process sections updating layout memory */
-extern int setup_image(layout *lay, lib_info *loaded_libs, char *start_name);
+typedef struct _comm_sym {
+    uint32_t symtab_index;
+    off_t comm_offset;
+    struct _comm_sym *next; 	
+} comm_sym;
+
+extern int setup_image(layout *lay, char *start_name, comm_sym **commons);
+
+/* Process relocation sections updating layout memory */
+extern int relocate_image(layout *lay, lib_info *loaded_libs, comm_sym *commons);
 
 
