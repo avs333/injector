@@ -377,7 +377,7 @@ static int free_process_mem(pid_t pid, void *mem, size_t len)
     return (int) (long) map_unmap_process_mem(pid, mem, len);
 }
 
-#if 0
+#if 1
 /* len should be at most PAGESIZE */
 static int _copy_to_process(pid_t pid, void *base, void *mem, size_t len) 
 {
@@ -408,6 +408,13 @@ static int _copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 }
 #endif
 
+#undef PAGESIZE
+#ifdef __arm__
+#define PAGESIZE 4
+#else
+#define PAGESIZE 8
+#endif
+
 static int copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 {
     int k, fd = -1;
@@ -428,8 +435,12 @@ static int copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 	    goto err;		
 	}	
 	for(k = 0; k < len/PAGESIZE; k++) {
-	    if(write(fd, mem, PAGESIZE) != PAGESIZE) {
-		log_err("write failed at %p for %s\n", base, file);
+
+	    int i;
+		errno = 0;
+		i = write(fd, mem, PAGESIZE);
+	    if(i != PAGESIZE) {
+		log_err("write failed at %p for %s, k=%d i=%d %d\n", base, file, k, i, errno);
 		goto err;
 	    }	
 	    mem  += PAGESIZE;
@@ -728,7 +739,7 @@ static int injector(int argc, char **argv)
 	    goto done;
 	}
 
-	log_info("Setup succeeded for %lx: entry=0x%lx, extra memory used: bss=0x%lx, comm=0x%lx\n", 
+	if(!quiet) log_info("Setup succeeded for %lx: entry=0x%lx, extra memory used: bss=0x%lx, comm=0x%lx\n", 
 		(long) lay->mem, (long) lay->entry_offs, (long) lay->bss_size, (long) lay->comm_size);
 
 	/* First pass */
@@ -848,7 +859,7 @@ static int injector(int argc, char **argv)
 	if(target_pid) {
 	    int k;
 	    log_info("Copying image to pid %d\n", target_pid);	
-	    k = copy_to_process(target_pid, lay->base, lay->mem, tot_len);
+	    k = _copy_to_process(target_pid, lay->base, lay->mem, tot_len);
 	    if(k != 0) {
 		log_err("failed to copy object code into process memory\n");
 		goto done;
