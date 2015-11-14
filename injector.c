@@ -377,6 +377,7 @@ static int free_process_mem(pid_t pid, void *mem, size_t len)
     return (int) (long) map_unmap_process_mem(pid, mem, len);
 }
 
+#if 0
 static int copy_to_process_pt(pid_t pid, void *base, void *mem, size_t len) 
 {
     long pt;
@@ -404,11 +405,16 @@ static int copy_to_process_pt(pid_t pid, void *base, void *mem, size_t len)
 	log_debug("%d bytes copied\n",  (int) len);
     return 0;	
 }
+#endif
+
 
 static int copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 {
     int k, fd = -1;
     char file[128];
+#ifdef __arm__
+    uint32_t start = (uint32_t) base;
+#endif
 
 	if(len & (sizeof(long) - 1)) {
 	    log_err("internal error: image size not multiple of %d\n", (int) sizeof(long));
@@ -420,7 +426,11 @@ static int copy_to_process(pid_t pid, void *base, void *mem, size_t len)
 	    log_err("failed to open %s\n", file);
 	    goto err;		
 	}
+#ifdef __arm__
+	if(lseek64(fd, start, SEEK_SET) != (off64_t) start) {
+#else
 	if(lseek(fd, (off_t) base, SEEK_SET) != (off_t) base) {
+#endif
 	    log_err("seek to %p failed for %s\n", base, file);
 	    goto err;		
 	}	
@@ -554,6 +564,7 @@ static int injector(int argc, char **argv)
     int wait_exit = 0;
     void (*startup)(void *) = 0;
     void *start_arg = 0;
+    int start_arg_dfl_changed = 0;
 
     int max_plt_size = DFL_MAX_PLT_SIZE; 
     int max_got_size = DFL_MAX_GOT_SIZE;
@@ -570,7 +581,7 @@ static int injector(int argc, char **argv)
 	    "[libraries...] -- full paths to libraries it uses\n"
 	    "Options:\n"
 	    "-e <entry_point> -- start symbol in <file> (default is \"main\")\n"
-	    "-i <word> -- argument to pass to <entry_point> (default is 0)\n"
+	    "-i <word> -- argument to pass to <entry_point> (default is start address of injected code)\n"
 	    "-s <size> -- stack size of execution thread (default is %d)\n"
 	/*  "-t/-g <size> -- maximum size of PLT/GOT sections for 1st pass (defaults: 0x%x/0x%x)\n" */
 	    "-p <pid> OR -n <proc_name> -- target pid or process name (default is current process)\n"
@@ -603,7 +614,8 @@ static int injector(int argc, char **argv)
 		    start_name = optarg;
 		    break;
 		case 'i':
-		    start_arg = (void *) strtoul(optarg, 0, 0); 
+		    start_arg = (void *) strtoul(optarg, 0, 0);
+		    start_arg_dfl_changed = 1;	 
 		    break;
 		case 'p':
 		    if(target_pid) {
@@ -841,7 +853,7 @@ static int injector(int argc, char **argv)
 
 	log_info("Second pass succeeded. Layout:\n");
 	log_info("mem=%p plt=%lx got=%lx bss=%lx bss_size=%lx\n",
-		lay->mem, (long) lay->plt, (long) lay->got,
+		lay->base ? lay->base : lay->mem, (long) lay->plt, (long) lay->got,
 		(long) lay->bss, (long) lay->bss_size);
 	
 	if(dump_image) dump(lay);
@@ -851,14 +863,21 @@ static int injector(int argc, char **argv)
 	    log_info("Copying image to pid %d\n", target_pid);	
 	    k = copy_to_process(target_pid, lay->base, lay->mem, tot_len);
 	    if(k != 0) {
+#if 0
 		log_info("direct copy_to_process failed, trying other way\n");
 		k = copy_to_process_pt(target_pid, lay->base, lay->mem, tot_len);
 		if(k != 0) {
 		    log_err("direct copy failed.");	
 		    goto done;
 		}
+#else
+		log_info("copy_to_process failed\n");
+		goto done;
+#endif
 	    }
 	    log_info("Image copied\n");
+
+	    if(!start_arg_dfl_changed) start_arg = lay->base;
 
 	    k = run(target_pid, lay, start_arg, stack_size);
 
