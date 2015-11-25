@@ -165,7 +165,7 @@ static off_t handle_external_symbol(uint32_t rel_type, char *name, layout *lay, 
 
 	if(!addr) {
 	    if(strcmp(name, "_GLOBAL_OFFSET_TABLE_") == 0) return lay->got;	/* we create our own GOT */
-	    log_err("\nfailed to find symbol \"%s\" in loaded libs\n", name);
+	    log_debug("\nfailed to find symbol \"%s\" in loaded libs\n", name);
 	    return 0;
 	}
 
@@ -286,8 +286,12 @@ static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_
 	    /* External symbol, look it up in libs and set up plt entry */
 	    sym_addr = handle_external_symbol(rel_type, name, lay, loaded_libs);
 	    if(!sym_addr) {
-		log_err("-- undefined external symbol\n");
-		return ELF_REL_ERR;
+		if(ELF_ST_BIND(symbol->st_info) & STB_WEAK) {
+		    log_debug("-- weak symbol, ignored\n");
+		} else {
+		    log_err("-- undefined external symbol\n");
+		    return ELF_REL_ERR;
+		}
 	    }
 	} else if(symbol->st_shndx == SHN_ABS) {
 	    /* Absolute symbol */
