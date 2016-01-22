@@ -165,7 +165,6 @@ static off_t handle_external_symbol(uint32_t rel_type, char *name, layout *lay, 
 
 	if(!addr) {
 	    if(strcmp(name, "_GLOBAL_OFFSET_TABLE_") == 0) return lay->got;	/* we create our own GOT */
-	    log_debug("\nfailed to find symbol \"%s\" in loaded libs\n", name);
 	    return 0;
 	}
 
@@ -287,8 +286,10 @@ static int relocate(int type, Elf_Shdr *reltab, Elf_Rela *rel, layout *lay, lib_
 	    sym_addr = handle_external_symbol(rel_type, name, lay, loaded_libs);
 	    if(!sym_addr) {
 		if(ELF_ST_BIND(symbol->st_info) & STB_WEAK) {
+	    	    log_debug("\nfailed to find symbol \"%s\" in loaded libs\n", name);
 		    log_debug("-- weak symbol, ignored\n");
 		} else {
+	    	    log_err("\nfailed to find symbol \"%s\" in loaded libs\n", name);
 		    log_err("-- undefined external symbol\n");
 		    return ELF_REL_ERR;
 		}
@@ -673,7 +674,8 @@ int add_lib(pid_t target_pid, lib_info **loaded_libs, char *name)
     Elf_Ehdr *e;
     Elf_Shdr *sh;
     int itr = 0;
-
+    unsigned long target_type;
+ 
 	lib = (lib_info *) calloc(1, sizeof(lib_info));
 	lib->name = strdup(name);
 	lib->img = MAP_FAILED;
@@ -740,9 +742,15 @@ int add_lib(pid_t target_pid, lib_info **loaded_libs, char *name)
 	}	
 
 	link = 0;
+
+	if(strcmp(name,"/system/bin/linker") == 0 
+	    || strcmp(name,"/system/bin/linker64") == 0)
+		target_type = SHT_SYMTAB;  /* we need full symbol table here */
+	else target_type = SHT_DYNSYM;
+
 	for(k = 0; k < e->e_shnum; k++)  {
 	    sh = (Elf_Shdr *) (lib->img + e->e_shoff + e->e_shentsize * k);
-	    if(sh->sh_type == SHT_DYNSYM) {
+	    if(sh->sh_type == target_type) {
 		lib->dynsym_offset = sh->sh_offset;
 		lib->dynsym_size = sh->sh_size;
 		link = sh->sh_link;
