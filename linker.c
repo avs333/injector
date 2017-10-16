@@ -147,8 +147,9 @@ static off_t handle_external_symbol(uint32_t rel_type, char *name, layout *lay, 
     Elf_Sym *sym;
     off_t addr = 0, offs;
     void *plt_code;
-    int k, code_size;	
+    int k, code_size;
     void *dest;	
+    Elf_Shdr *sh;
 	
 	/* Try finding definition of this symbol in loaded libs */
 
@@ -158,7 +159,12 @@ static off_t handle_external_symbol(uint32_t rel_type, char *name, layout *lay, 
 		if(strcmp(name, lib->img + lib->dynstr_offset + sym->st_name) == 0) {
 		    if(sym->st_shndx == SHN_UNDEF) continue;  /* sym referenced but not defined here */
 		    addr = lib->load_addr + sym->st_value;
-		    log_debug("[%s] [0x%lx]", lib->name, addr);
+		    sh = section_hdr((Elf_Ehdr *)lib->img, sym->st_shndx);
+		    offs = (sh->sh_addr - sh->sh_offset);     /* bias to match android linker's behaviour */
+		    if(offs) {
+			addr -= offs;
+			log_debug("[%s] [0x%lx] [bias 0x%lx]", lib->name, addr, offs);
+		    } else log_debug("[%s] [0x%lx]", lib->name, addr);
 		    break;
 		}
 	}
