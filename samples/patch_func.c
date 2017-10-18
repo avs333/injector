@@ -73,9 +73,12 @@
 #endif
 
 static pthread_mutex_t patch_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int need_run = 1;
+static int running = 0;
 
 /* virgin TARGET_FUNC taken from TARGET_LIB copy */
 static int (*func_copy) TARGET_FUNC_ARGS = 0;
+extern int TARGET_FUNC TARGET_FUNC_ARGS;
 
 static int patch_func TARGET_FUNC_ARGS
 {
@@ -84,12 +87,14 @@ static int patch_func TARGET_FUNC_ARGS
     pthread_mutex_lock(&patch_mutex);	
 
 #if 0
-    ret = func_copy(pthis, a, b, c, d);
+    if(running) ret = func_copy(pthis, a, b, c, d);
+    else ret = TARGET_FUNC(pthis, a, b, c, d);
     log_info("setInputDevice(input=%d, device=0x%x, force=%s, patchHandle=%d)=%d", 
 		a, b, c ? "true":"false", d ? *d : 0, ret);	
 #else
     log_info("opening \"hw:%d,%d\" [flags=0x%x]", card, device, flags);	
-    ret = func_copy(card, device, flags, config);
+    if(running) ret = func_copy(card, device, flags, config);
+    else ret = TARGET_FUNC(card, device, flags, config);
 #endif
 
     pthread_mutex_unlock(&patch_mutex);	
@@ -124,8 +129,6 @@ extern void *DLSYM(void *handle, const char *symbol, const void *caller);
 extern int DLCLOSE(void *handle);
 extern void * DLOPEN_EXT(const char* filename, int flag, const android_dlextinfo* extinfo, const void *caller);
 
-extern int TARGET_FUNC TARGET_FUNC_ARGS;
-
 static uint32_t patch[3] = {
 #ifdef __thumb__
     0xc004f8df,				/* ldr.w ip, jump_ptr */
@@ -155,14 +158,10 @@ static void clear_cache(void *from, void *to)
 	"pop	{r2,r7}\n\t" : : "r" (_from), "r"(_to), "r"(0xf0002));
 }
 
-
-static int need_run = 1;
-
 static void terminate(int sig) {
     log_info("exiting");	
     need_run = 0;
 }
-
 
 /***** Entry point ****/
 
@@ -249,6 +248,7 @@ int main(int argc, char **argv)
 	/* fingers crossed... */
 	memcpy((void *) patch_addr, patch, sizeof(patch));
 	clear_cache((void *) patch_addr, (void *) patch_addr + sizeof(patch)); 
+	running = 1;
 
 	if(mprotect((void *) prot_addr, prot_size, PROT_READ | PROT_EXEC) != 0) 
 	    log_err("error: failed to restore original memory protection, continue anyway");
@@ -262,6 +262,7 @@ int main(int argc, char **argv)
 
 	while(need_run) sleep(1);
 	
+	pthread_mutex_lock(&patch_mutex);
 	if(mprotect((void *) prot_addr, prot_size, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) 
 	    log_err("cannot change memory protection at 0x%08x [%s], exiting anyway", prot_addr, strerror(errno));
 	else {
@@ -271,6 +272,8 @@ int main(int argc, char **argv)
 		log_err("error: failed to restore original memory protection");
 	    else ret = 0;	
 	}
+	running = 0;
+	pthread_mutex_unlock(&patch_mutex);
 
     exit: 
 	DLCLOSE(libcopy);
