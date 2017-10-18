@@ -332,7 +332,7 @@ static void *map_unmap_process_mem(pid_t pid, void *mem, size_t len)
 	    log_err("cannot get regs mmap: errno=%d\n", errno);	
 	    goto out;	
 	}
-	/* info_regs(pid, &new_regs, "after mmap: "); */
+ 	/* info_regs(pid, &new_regs, "after mmap: "); */
 
 	errno = 0;
 #ifdef __arm__
@@ -359,7 +359,6 @@ static void *map_unmap_process_mem(pid_t pid, void *mem, size_t len)
 	if(ret == MAP_FAILED) {
 	    log_err("mmap syscall failed\n");
 	    if(!mem) ret = 0;
-	    goto out;
 	}
 	ptrace(PTRACE_DETACH, pid, 0, 0);
 
