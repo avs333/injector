@@ -75,6 +75,7 @@
 static pthread_mutex_t patch_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int need_run = 1;
 static int running = 0;
+static uint32_t func_addr;
 
 /* virgin TARGET_FUNC taken from TARGET_LIB copy */
 static int (*func_copy) TARGET_FUNC_ARGS = 0;
@@ -88,13 +89,13 @@ static int patch_func TARGET_FUNC_ARGS
 
 #if 0
     if(running) ret = func_copy(pthis, a, b, c, d);
-    else ret = TARGET_FUNC(pthis, a, b, c, d);
+    else ret = ((typeof(func_copy)) func_addr) (pthis, a, b, c, d);
     log_info("setInputDevice(input=%d, device=0x%x, force=%s, patchHandle=%d)=%d", 
 		a, b, c ? "true":"false", d ? *d : 0, ret);	
 #else
     log_info("opening \"hw:%d,%d\" [flags=0x%x]", card, device, flags);	
     if(running) ret = func_copy(card, device, flags, config);
-    else ret = TARGET_FUNC(card, device, flags, config);
+    else ret = ((typeof(func_copy)) func_addr) (card, device, flags, config);
 #endif
 
     pthread_mutex_unlock(&patch_mutex);	
@@ -167,7 +168,7 @@ static void terminate(int sig) {
 
 int main(int argc, char **argv) 
 { 
-    uint32_t func_addr, patch_addr;
+    uint32_t patch_addr;
     uint32_t prot_addr, prot_size;
     int ret = -1;
     void *caller = 0;
